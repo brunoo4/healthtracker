@@ -1,0 +1,61 @@
+# ─── Segredos ────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# Sessão/token do Garmin
+.garmin_session
+.garth/
+*.session
+
+# ─── Node / TypeScript ───────────────────────────────
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.npm/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ─── Python ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ─── Prisma ──────────────────────────────────────────
+# migrations SÃO versionadas — não ignorar api/prisma/migrations/
+prisma/*.db
+prisma/*.db-journal
+
+# ─── Dados locais ────────────────────────────────────
+*.sqlite
+*.sqlite3
+/data/
+*.dump
+
+# Saídas antigas do script (JSON bruto) — não versionar dados pessoais
+ingestion/output/
+*.json.bak
+
+# ─── Editor / SO ─────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ─── Testes e cobertura ──────────────────────────────
+coverage/
+.nyc_output/
+
+# ─── Logs ────────────────────────────────────────────
+logs/
+*.log
