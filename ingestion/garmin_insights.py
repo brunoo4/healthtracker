@@ -1,42 +1,140 @@
 """
 garmin_insights.py
 ==================
-Puxa dados de treino do Garmin Connect e gera um JSON
-pronto para análise de insights com o Claude.
+Extrai dados de treino e saúde do Garmin Connect e grava um JSON
+normalizado, pronto para ser consumido pelo seed do garmin-dashboard.
+
+Princípios desta versão:
+  - Unidades cruas e em SI (metros, segundos). Nada de valor derivado
+    ou formatado: pace, ritmo e percentuais são calculados na leitura.
+  - Todo campo carrega a unidade no nome quando há ambiguidade.
+  - Cada atividade traz o activity_id do Garmin (chave de idempotência).
+  - Métricas diárias saem já consolidadas por data em `daily_metrics`.
 
 SETUP:
-  1. pip install garminconnect python-dotenv
-  2. Crie um arquivo .env na mesma pasta com:
-       GARMIN_EMAIL=seu@email.com
-       GARMIN_PASSWORD=suasenha
-  3. python garmin_insights.py
-
-O script vai gerar: garmin_data.json
-Cole o conteúdo desse arquivo numa conversa com o Claude.
+  1. pip3 install "garminconnect>=0.3.0" python-dotenv
+  2. Crie um .env nesta pasta (veja .env.example)
+  3. python3 garmin_insights.py
 """
 
 import json
+import logging
 import os
 import sys
-from datetime import date, timedelta
+import time
+from datetime import date, datetime, timedelta
 from getpass import getpass
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Credenciais ────────────────────────────────────────────────────────────────
+# ── Configuração ───────────────────────────────────────────────────────────────
 
-EMAIL    = os.getenv("GARMIN_EMAIL")    or input("Garmin email: ")
+SCHEMA_VERSION = 3
+
+EMAIL = os.getenv("GARMIN_EMAIL") or input("Garmin email: ")
 PASSWORD = os.getenv("GARMIN_PASSWORD") or getpass("Garmin password: ")
 
-# ── Janela de dados ────────────────────────────────────────────────────────────
+DAYS_BACK = int(os.getenv("SYNC_DEFAULT_DAYS", "30"))
+REQUEST_DELAY = float(os.getenv("REQUEST_DELAY_SECONDS", "1"))
+SESSION_PATH = os.getenv("GARMIN_SESSION_PATH", ".garmin_session")
+OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
+OUTPUT_FILE = OUTPUT_DIR / "garmin_data.json"
 
-DAYS_BACK   = 30          # quantos dias de histórico puxar
-TODAY       = date.today()
-START_DATE  = TODAY - timedelta(days=DAYS_BACK)
-START_STR   = START_DATE.isoformat()
-TODAY_STR   = TODAY.isoformat()
+TODAY = date.today()
+START_DATE = TODAY - timedelta(days=DAYS_BACK)
+START_STR = START_DATE.isoformat()
+TODAY_STR = TODAY.isoformat()
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s  %(levelname)-7s %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("garmin")
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def safe(fn, *args, default=None, **kwargs):
+    """Executa fn tolerando falha. Respeita o delay entre requisições."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as exc:
+        log.warning("%s falhou: %s", getattr(fn, "__name__", fn), exc)
+        return default
+    finally:
+        if REQUEST_DELAY:
+            time.sleep(REQUEST_DELAY)
+
+
+def num(val, decimals=2):
+    """Converte para float arredondado, ou None."""
+    try:
+        if val is None:
+            return None
+        return round(float(val), decimals)
+    except (TypeError, ValueError):
+        return None
+
+
+def num_nz(val, decimals=2):
+    """Como num(), mas 0 vira None.
+
+    Musculação devolve distance/speed = 0 enquanto devolve null para
+    max_speed, cadência e passada — inconsistência da própria API.
+    Zero aqui não é medição, é "não se aplica", e contaminaria qualquer
+    média de pace ou distância calculada depois.
+    """
+    result = num(val, decimals)
+    return None if result == 0 else result
+
+
+def integer(val):
+    try:
+        if val is None:
+            return None
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def local_date(timestamp):
+    """Data pura a partir do horário local do Garmin ('YYYY-MM-DD HH:MM:SS')."""
+    if not isinstance(timestamp, str) or len(timestamp) < 10:
+        return None
+    return timestamp[:10]
+
+
+def iso(timestamp, utc=False):
+    """Normaliza o timestamp do Garmin para ISO-8601.
+
+    O Garmin devolve 'YYYY-MM-DD HH:MM:SS' — espaço no lugar do T e sem
+    marcador de fuso, o que o Date() do JS interpreta de forma diferente
+    conforme o runtime.
+    """
+    if not isinstance(timestamp, str) or " " not in timestamp:
+        return timestamp
+    return timestamp.replace(" ", "T") + ("Z" if utc else "")
+
+
+def dig(source, *keys, default=None):
+    """Navega dicionários aninhados sem estourar em None."""
+    current = source
+    for key in keys:
+        if not isinstance(current, dict):
+            return default
+        current = current.get(key)
+    return current if current is not None else default
+
+
+def date_range():
+    """Datas do período, da mais antiga para a mais recente."""
+    for offset in range(DAYS_BACK + 1):
+        yield (START_DATE + timedelta(days=offset)).isoformat()
+
 
 # ── Login ──────────────────────────────────────────────────────────────────────
 
@@ -44,332 +142,461 @@ def login():
     from garminconnect import Garmin, GarminConnectAuthenticationError
 
     def mfa_prompt():
-        return input("MFA code (cheque seu e-mail/app): ")
+        return input("Código MFA (cheque e-mail/app): ")
 
-    print("→ Conectando ao Garmin Connect...")
+    log.info("Conectando ao Garmin Connect...")
+
+    # Tentativa 1: reaproveitar sessão salva, evitando novo login e MFA.
+    if Path(SESSION_PATH).exists():
+        try:
+            client = Garmin()
+            client.login(SESSION_PATH)
+            log.info("Sessão restaurada de %s", SESSION_PATH)
+            return client
+        except Exception as exc:
+            log.warning("Sessão inválida (%s). Autenticando do zero.", exc)
+
+    # Tentativa 2: login com credenciais.
     try:
         client = Garmin(EMAIL, PASSWORD, prompt_mfa=mfa_prompt)
         client.login()
-        print(f"  Logado como: {client.get_full_name()}")
-        return client
-    except GarminConnectAuthenticationError as e:
-        print(f"  Erro de autenticação: {e}")
+        log.info("Logado como: %s", safe(client.get_full_name, default="?"))
+    except GarminConnectAuthenticationError as exc:
+        log.error("Falha de autenticação: %s", exc)
         sys.exit(1)
-    except Exception as e:
-        print(f"  Erro inesperado: {e}")
+    except Exception as exc:
+        log.error("Erro inesperado no login: %s", exc)
         sys.exit(1)
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
-
-def safe(fn, *args, default=None, **kwargs):
-    """Chama fn silenciosamente, retorna default em caso de erro."""
+    # Persiste a sessão para as próximas execuções.
     try:
-        return fn(*args, **kwargs)
-    except Exception as e:
-        print(f"  [aviso] {fn.__name__}: {e}")
-        return default
+        client.garth.dump(SESSION_PATH)
+        log.debug("Sessão salva em %s", SESSION_PATH)
+    except Exception as exc:
+        log.debug("Não foi possível salvar a sessão: %s", exc)
+
+    return client
 
 
-def round_or_none(val, decimals=2):
-    try:
-        return round(float(val), decimals)
-    except (TypeError, ValueError):
-        return None
-
-
-def format_pace(seconds_per_meter):
-    """Converte m/s para string mm:ss/km."""
-    if not seconds_per_meter:
-        return None
-    spm = float(seconds_per_meter)
-    if spm <= 0:
-        return None
-    sec_per_km = spm * 1000
-    mins = int(sec_per_km // 60)
-    secs = int(sec_per_km % 60)
-    return f"{mins}:{secs:02d}/km"
-
-# ── Coleta de dados ────────────────────────────────────────────────────────────
+# ── Atividades ─────────────────────────────────────────────────────────────────
 
 def fetch_activities(client):
-    print("→ Buscando atividades de corrida...")
-    all_acts = safe(
-        client.get_activities_by_date,
-        START_STR, TODAY_STR, "running",
-        default=[]
-    ) or []
+    """
+    Busca TODAS as atividades do período, não só corrida.
+    Musculação e demais esportes entram agora para não exigir
+    recarga histórica quando o domínio de força for implementado.
+    """
+    log.info("Buscando atividades de %s a %s...", START_STR, TODAY_STR)
+    raw = safe(client.get_activities_by_date, START_STR, TODAY_STR, default=[]) or []
 
     activities = []
-    for act in all_acts:
-        aid = act.get("activityId")
-
-        # Splits por km (pace real de cada km)
-        splits_raw = safe(client.get_activity_splits, aid, default={}) or {}
-        splits = []
-        for s in splits_raw.get("lapDTOs", []):
-            dist = s.get("distance", 0)
-            if dist and dist > 100:      # ignora splits muito curtos
-                splits.append({
-                    "km":           round_or_none(dist / 1000),
-                    "pace":         format_pace(s.get("averageMovingSpeed")),
-                    "avg_hr":       s.get("averageHR"),
-                    "elevation_m":  round_or_none(s.get("elevationGain")),
-                })
-
-        # HR por zona
-        hr_zones_raw = safe(client.get_activity_hr_in_timezones, aid, default=[]) or []
-        hr_zones = [
-            {
-                "zone":       z.get("zoneNumber"),
-                "time_min":   round_or_none((z.get("secsInZone") or 0) / 60),
-                "pct":        round_or_none(z.get("zonePct")),
-            }
-            for z in hr_zones_raw
-        ]
-
-        dist_km  = round_or_none((act.get("distance") or 0) / 1000)
-        dur_min  = round_or_none((act.get("duration") or 0) / 60)
-        avg_spd  = act.get("averageSpeed")
+    for act in raw:
+        activity_id = act.get("activityId")
+        if activity_id is None:
+            log.warning("Atividade sem activityId ignorada: %s", act.get("activityName"))
+            continue
 
         activities.append({
-            "date":             act.get("startTimeLocal", "")[:10],
-            "name":             act.get("activityName"),
-            "distance_km":      dist_km,
-            "duration_min":     dur_min,
-            "avg_pace":         format_pace(avg_spd),
-            "avg_hr":           act.get("averageHR"),
-            "max_hr":           act.get("maxHR"),
-            "calories":         act.get("calories"),
-            "elevation_gain_m": act.get("elevationGain"),
-            "training_effect_aerobic":   round_or_none(act.get("aerobicTrainingEffect")),
-            "training_effect_anaerobic": round_or_none(act.get("anaerobicTrainingEffect")),
-            "training_load":    round_or_none(act.get("activityTrainingLoad")),
-            "vo2max_estimated": act.get("vO2MaxValue"),
-            "avg_cadence":      act.get("averageRunningCadenceInStepsPerMinute"),
-            "avg_stride_m":     round_or_none(act.get("avgStrideLength")),
-            "hrv_sdrr_5":       act.get("summarizedDiveInfo"),   # proxy; pode ser None
-            "splits_per_km":    splits,
-            "hr_zones":         hr_zones,
+            "activity_id": str(activity_id),
+            "activity_type": dig(act, "activityType", "typeKey"),
+            "name": act.get("activityName"),
+            # Data pura pelo horário LOCAL, não GMT: treino às 22h no Brasil
+            # cai no dia seguinte em UTC, e o agrupamento por dia tem que
+            # seguir o dia vivido. É o que permite cruzar atividade com a
+            # métrica diária.
+            "date": local_date(act.get("startTimeLocal")),
+            "started_at": iso(act.get("startTimeLocal")),
+            "started_at_gmt": iso(act.get("startTimeGMT"), utc=True),
+            "duration_s": num(act.get("duration"), 1),
+            "moving_duration_s": num(act.get("movingDuration"), 1),
+            "distance_m": num_nz(act.get("distance"), 1),
+            "avg_speed_mps": num_nz(act.get("averageSpeed"), 4),
+            "max_speed_mps": num(act.get("maxSpeed"), 4),
+            "avg_hr_bpm": integer(act.get("averageHR")),
+            "max_hr_bpm": integer(act.get("maxHR")),
+            "calories": num(act.get("calories"), 0),
+            "elevation_gain_m": num(act.get("elevationGain"), 1),
+            "elevation_loss_m": num(act.get("elevationLoss"), 1),
+            "avg_cadence_spm": num(act.get("averageRunningCadenceInStepsPerMinute"), 1),
+            "max_cadence_spm": num(act.get("maxRunningCadenceInStepsPerMinute"), 1),
+            # avgStrideLength vem em CENTÍMETROS na API do Garmin.
+            "avg_stride_length_m": num_nz((act.get("avgStrideLength") or 0) / 100, 3),
+            "training_effect_aerobic": num(act.get("aerobicTrainingEffect"), 1),
+            "training_effect_anaerobic": num(act.get("anaerobicTrainingEffect"), 1),
+            "training_load": num(act.get("activityTrainingLoad"), 2),
+            "vo2max_estimated": num(act.get("vO2MaxValue"), 1),
+            "splits": fetch_splits(client, activity_id),
+            "hr_zones": fetch_hr_zones(client, activity_id),
         })
 
-    print(f"  {len(activities)} atividades encontradas.")
+    log.info("%d atividades coletadas.", len(activities))
     return activities
 
 
-def fetch_weekly_load(client):
-    print("→ Buscando carga semanal (training status)...")
-    status = safe(client.get_training_status, START_STR, default={}) or {}
-    readiness_list = []
-    for entry in (status.get("trainingReadinessDTO") or []):
-        readiness_list.append({
-            "date":             entry.get("calendarDate"),
-            "readiness_score":  entry.get("score"),
-            "readiness_level":  entry.get("level"),
-            "hrv_status":       entry.get("hrvStatus"),
-            "sleep_score":      entry.get("sleepScore"),
-            "recovery_time_h":  entry.get("recoveryTime"),
+def fetch_splits(client, activity_id):
+    """Voltas da atividade, em unidades cruas. Pace é derivado na leitura."""
+    raw = safe(client.get_activity_splits, activity_id, default={}) or {}
+    splits = []
+    for index, lap in enumerate(raw.get("lapDTOs") or [], start=1):
+        distance = lap.get("distance")
+        if not distance or distance <= 100:  # descarta voltas residuais
+            continue
+        splits.append({
+            "index": index,
+            "distance_m": num(distance, 1),
+            "duration_s": num(lap.get("duration"), 1),
+            "avg_speed_mps": num_nz(lap.get("averageMovingSpeed"), 4),
+            "avg_hr_bpm": integer(lap.get("averageHR")),
+            "max_hr_bpm": integer(lap.get("maxHR")),
+            "elevation_gain_m": num(lap.get("elevationGain"), 1),
         })
-    return readiness_list
+    return splits
+
+
+def fetch_hr_zones(client, activity_id):
+    """Tempo por zona de FC, em segundos. Percentual é derivado na leitura."""
+    raw = safe(client.get_activity_hr_in_timezones, activity_id, default=[]) or []
+    return [
+        {
+            "zone": integer(zone.get("zoneNumber")),
+            "seconds_in_zone": num(zone.get("secsInZone"), 1),
+            "zone_low_bpm": num(zone.get("zoneLowBoundary"), 0),
+        }
+        for zone in raw
+    ]
+
+
+# ── Métricas diárias ───────────────────────────────────────────────────────────
+
+def fetch_daily_stats(client):
+    """
+    get_stats é a fonte correta para passos, estresse, FC de repouso e
+    body battery — dados que a versão anterior tentava ler do sono e
+    voltavam sempre nulos.
+    """
+    log.info("Buscando resumo diário (passos, estresse, FC repouso, body battery)...")
+    result = {}
+    for day in date_range():
+        stats = safe(client.get_stats, day, default=None)
+        if not stats:
+            continue
+        result[day] = {
+            "steps": integer(stats.get("totalSteps")),
+            "resting_heart_rate_bpm": integer(stats.get("restingHeartRate")),
+            "min_heart_rate_bpm": integer(stats.get("minHeartRate")),
+            "max_heart_rate_bpm": integer(stats.get("maxHeartRate")),
+            "stress_avg": integer(stats.get("averageStressLevel")),
+            "stress_max": integer(stats.get("maxStressLevel")),
+            "body_battery_charged": integer(stats.get("bodyBatteryChargedValue")),
+            "body_battery_drained": integer(stats.get("bodyBatteryDrainedValue")),
+            "body_battery_max": integer(stats.get("bodyBatteryHighestValue")),
+            "body_battery_min": integer(stats.get("bodyBatteryLowestValue")),
+            "active_calories": integer(stats.get("activeKilocalories")),
+            "floors_climbed": integer(stats.get("floorsAscended")),
+        }
+    log.info("%d dias com resumo diário.", len(result))
+    return result
 
 
 def fetch_hrv(client):
-    print("→ Buscando HRV...")
-    results = []
-    for i in range(DAYS_BACK):
-        d = (TODAY - timedelta(days=i)).isoformat()
-        hrv = safe(client.get_hrv_data, d, default=None)
-        if hrv:
-            summary = hrv.get("hrvSummary") or {}
-            results.append({
-                "date":          d,
-                "weekly_avg":    summary.get("weeklyAvg"),
-                "last_night":    summary.get("lastNight"),
-                "status":        summary.get("status"),
-                "5min_high":     summary.get("lastNight5MinHigh"),
-            })
-    return results
+    """
+    Correção relevante: a chave da média da noite é `lastNightAvg`,
+    não `lastNight` — por isso o campo vinha nulo em 100% dos dias.
+
+    Esta é a fonte primária de HRV. O sono também expõe `avgOvernightHrv`,
+    idêntico em 61/61 dias (inclusive nos dias sem dado), e foi removido
+    por ser duplicata. Consequência aceita: dia sem `hrvSummary` sai sem
+    HRV, em vez de cair num fallback implícito entre duas fontes.
+    """
+    log.info("Buscando HRV...")
+    result = {}
+    for day in date_range():
+        hrv = safe(client.get_hrv_data, day, default=None)
+        summary = dig(hrv, "hrvSummary")
+        if not summary:
+            continue
+        status = summary.get("status")
+        result[day] = {
+            "hrv_last_night_ms": integer(summary.get("lastNightAvg")),
+            "hrv_5min_high_ms": integer(summary.get("lastNight5MinHigh")),
+            "hrv_weekly_avg_ms": integer(summary.get("weeklyAvg")),
+            # 'NONE' é sentinela de string para "sem status" e convive com
+            # o None de verdade. Duas formas de dizer o mesmo — colapsa numa.
+            "hrv_status": None if status == "NONE" else status,
+            "hrv_baseline_low_ms": integer(dig(summary, "baseline", "lowUpper")),
+            "hrv_baseline_high_ms": integer(dig(summary, "baseline", "balancedUpper")),
+        }
+    log.info("%d dias com HRV.", len(result))
+    return result
 
 
 def fetch_sleep(client):
-    print("→ Buscando dados de sono...")
-    results = []
-    for i in range(DAYS_BACK):
-        d = (TODAY - timedelta(days=i)).isoformat()
-        sleep = safe(client.get_sleep_data, d, default=None)
-        if sleep:
-            daily = sleep.get("dailySleepDTO") or {}
-            results.append({
-                "date":               d,
-                "duration_h":         round_or_none((daily.get("sleepTimeSeconds") or 0) / 3600),
-                "deep_min":           round_or_none((daily.get("deepSleepSeconds") or 0) / 60),
-                "light_min":          round_or_none((daily.get("lightSleepSeconds") or 0) / 60),
-                "rem_min":            round_or_none((daily.get("remSleepSeconds") or 0) / 60),
-                "awake_min":          round_or_none((daily.get("awakeSleepSeconds") or 0) / 60),
-                "sleep_score":        daily.get("sleepScores", {}).get("overall", {}).get("value"),
-                "avg_overnight_hrv":  daily.get("avgOvernightHrv"),
-                "avg_spo2":           daily.get("averageSpO2Value"),
-                "avg_rhr":            daily.get("restingHeartRate"),
-            })
-    return results
+    """
+    Correção mantida: sleepScores pode vir nulo e quebrava a navegação.
 
-
-def fetch_body_battery(client):
-    print("→ Buscando Body Battery...")
-    results = []
-    for i in range(DAYS_BACK):
-        d = (TODAY - timedelta(days=i)).isoformat()
-        bb = safe(client.get_body_battery, d, d, default=None)
-        if bb and isinstance(bb, list):
-            charged = max((x.get("charged", 0) for x in bb), default=None)
-            drained = max((x.get("drained", 0) for x in bb), default=None)
-            results.append({
-                "date":         d,
-                "charged":      charged,
-                "drained":      drained,
-            })
-    return results
-
-
-def fetch_vo2max_and_race_predictions(client):
-    print("→ Buscando VO2Max e previsões de prova...")
-    metrics = safe(client.get_max_metrics, TODAY_STR, default={}) or {}
-    race    = safe(client.get_race_predictions, default={}) or {}
-    return {
-        "vo2max_running":  metrics.get("vo2MaxPreciseValue"),
-        "fitness_age":     metrics.get("fitnessAge"),
-        "race_predictions": {
-            "5k":    race.get("time5K"),
-            "10k":   race.get("time10K"),
-            "half":  race.get("timeHalfMarathon"),
-            "full":  race.get("timeMarathon"),
+    SpO2 e respiração noturnos foram removidos: nulos em 61/61 dias. A
+    navegação estava certa (avgOvernightHrv, irmão no mesmo nível, vinha
+    preenchido) — o Pulse Ox noturno é que está desligado no relógio.
+    Voltam quando o sensor for ligado.
+    """
+    log.info("Buscando sono...")
+    result = {}
+    for day in date_range():
+        sleep = safe(client.get_sleep_data, day, default=None)
+        daily = dig(sleep, "dailySleepDTO")
+        if not daily:
+            continue
+        row = {
+            "sleep_duration_s": integer(daily.get("sleepTimeSeconds")),
+            "sleep_deep_s": integer(daily.get("deepSleepSeconds")),
+            "sleep_light_s": integer(daily.get("lightSleepSeconds")),
+            "sleep_rem_s": integer(daily.get("remSleepSeconds")),
+            "sleep_awake_s": integer(daily.get("awakeSleepSeconds")),
+            "sleep_score": integer(dig(daily, "sleepScores", "overall", "value")),
         }
+        check_sleep_phases(day, row)
+        result[day] = row
+    log.info("%d dias com sono.", len(result))
+    return result
+
+
+def check_sleep_phases(day, row):
+    """Sentinela de dado corrompido: as fases somam a duração, com folga.
+
+    deep + light + rem = sleep_duration_s, com `awake` fora da soma. Não é
+    exato: em 61 dias, 17 noites divergiram de 1 a 39 segundos por causa do
+    arredondamento na atribuição de fases. Por isso a checagem é de ordem de
+    grandeza — como igualdade estrita, reprovaria 29% dos dados bons.
+    """
+    fases = [row["sleep_deep_s"], row["sleep_light_s"], row["sleep_rem_s"]]
+    if row["sleep_duration_s"] is None or any(f is None for f in fases):
+        return
+    desvio = abs(sum(fases) - row["sleep_duration_s"])
+    if desvio > 60:
+        log.warning("%s: fases do sono desviam %ds da duração.", day, desvio)
+
+
+def fetch_training_readiness(client):
+    """Substitui o antigo get_training_status, que devolvia lista vazia."""
+    log.info("Buscando training readiness...")
+    result = {}
+    for day in date_range():
+        raw = safe(client.get_training_readiness, day, default=None)
+        entry = raw[0] if isinstance(raw, list) and raw else raw
+        if not isinstance(entry, dict):
+            continue
+        result[day] = {
+            "readiness_score": integer(entry.get("score")),
+            "readiness_level": entry.get("level"),
+            # recoveryTime vem em MINUTOS. Confirmado na distribuição de 61
+            # dias: mediana 201, máximo 4026 — 67h de recuperação depois de
+            # um treino pesado. Em horas, 4026 seriam 168 dias.
+            "recovery_time_min": integer(entry.get("recoveryTime")),
+        }
+    log.info("%d dias com readiness.", len(result))
+    return result
+
+
+# Conjunto canônico de colunas de daily_metrics. É o contrato: a tabela
+# do banco e os tipos do TypeScript derivam desta lista.
+DAILY_METRIC_FIELDS = (
+    # Atividade geral
+    "steps",
+    "active_calories",
+    "floors_climbed",
+    # Cardio
+    "resting_heart_rate_bpm",
+    "min_heart_rate_bpm",
+    "max_heart_rate_bpm",
+    # Estresse
+    "stress_avg",
+    "stress_max",
+    # Body battery
+    "body_battery_charged",
+    "body_battery_drained",
+    "body_battery_max",
+    "body_battery_min",
+    # HRV
+    "hrv_last_night_ms",
+    "hrv_5min_high_ms",
+    "hrv_weekly_avg_ms",
+    "hrv_status",
+    "hrv_baseline_low_ms",
+    "hrv_baseline_high_ms",
+    # Sono
+    "sleep_duration_s",
+    "sleep_deep_s",
+    "sleep_light_s",
+    "sleep_rem_s",
+    "sleep_awake_s",
+    "sleep_score",
+    # Readiness
+    "readiness_score",
+    "readiness_level",
+    "recovery_time_min",
+)
+
+
+def build_daily_metrics(*sources):
+    """
+    Consolida as fontes diárias numa única linha por data.
+    Esta é a forma que a tabela daily_metrics espera.
+
+    Toda linha carrega TODAS as chaves: um dia sem HRV sai com hrv_* = None,
+    não com as chaves ausentes. Antes, uma fonte que falhasse sumia com suas
+    chaves da linha inteira, e o consumidor levava KeyError em vez de None.
+    Lacuna explícita, forma estável.
+    """
+    days = sorted({day for source in sources for day in source})
+    merged = []
+    for day in days:
+        row = {"date": day, **dict.fromkeys(DAILY_METRIC_FIELDS)}
+        for source in sources:
+            row.update(source.get(day, {}))
+        merged.append(row)
+    return merged
+
+
+# ── Contexto (não diário) ──────────────────────────────────────────────────────
+
+def fetch_fitness(client):
+    """
+    Previsões de prova.
+
+    vo2max_running e fitness_age foram removidos: vinham nulos de
+    get_max_metrics, que saiu junto (uma requisição a menos). Não é
+    bloqueante — o VO2max confiável entra por atividade de corrida, em
+    `vo2max_estimated`. Voltam quando a chamada for investigada.
+    """
+    log.info("Buscando previsões de prova...")
+    race = safe(client.get_race_predictions, default={}) or {}
+
+    return {
+        "race_prediction_5k_s": integer(race.get("time5K")),
+        "race_prediction_10k_s": integer(race.get("time10K")),
+        "race_prediction_half_s": integer(race.get("timeHalfMarathon")),
+        "race_prediction_full_s": integer(race.get("timeMarathon")),
     }
 
 
-def fetch_coach_plan(client):
-    print("→ Buscando plano do Garmin Coach...")
+def fetch_gear(client, profile):
+    """
+    Correção: get_gear espera o userProfileNumber (numérico),
+    não o displayName — motivo de a lista vir sempre vazia.
 
-    # Treinos agendados (próximas 8 semanas)
-    end_schedule = (TODAY + timedelta(days=56)).isoformat()
-    scheduled_raw = safe(client.get_scheduled_workouts, TODAY_STR, end_schedule, default=[]) or []
+    TODO(pós-MVP): ainda vem vazio em 60 dias, então a correção do
+    profile_id não bastou. Próximo suspeito: o filtro gearTypeName ==
+    "shoes" abaixo, que descarta todo o resto e pode estar comparando
+    com o rótulo errado. Fora do MVP.
+    """
+    log.info("Buscando calçados...")
+    profile_id = (
+        profile.get("userProfileId")
+        or profile.get("profileId")
+        or profile.get("id")
+    )
+    if not profile_id:
+        log.warning("userProfileId não encontrado; pulando gear.")
+        return []
+
+    gear_list = safe(client.get_gear, profile_id, default=[]) or []
+    shoes = []
+    for gear in gear_list:
+        if gear.get("gearTypeName") != "shoes":
+            continue
+        shoes.append({
+            "gear_id": gear.get("uuid") or gear.get("gearPk"),
+            "name": gear.get("displayName") or gear.get("customMakeModel"),
+            "total_distance_m": num(gear.get("totalDistance"), 1),
+            "max_distance_m": num(gear.get("maximumMeters"), 1),
+            "date_begin": gear.get("dateBegin"),
+            "retired": gear.get("gearStatusName") == "retired",
+        })
+    log.info("%d calçado(s).", len(shoes))
+    return shoes
+
+
+def fetch_scheduled_workouts(client):
+    """
+    Treinos agendados. O antigo get_training_plans retornava strings soltas
+    (nomes de chave, não dados) e foi removido.
+
+    TODO(pós-MVP): vem vazio, e como há plano do Garmin Coach ativo isso é
+    provavelmente bug, não ausência de dado. Suspeitos: a assinatura de
+    get_scheduled_workouts e a janela de 56 dias abaixo. Fora do MVP.
+    """
+    log.info("Buscando treinos agendados...")
+    end = (TODAY + timedelta(days=56)).isoformat()
+    raw = safe(client.get_scheduled_workouts, TODAY_STR, end, default=[]) or []
 
     scheduled = []
-    for w in scheduled_raw:
-        workout_id = w.get("workoutId")
-
-        # Detalhes completos do workout (steps, targets de pace/FC)
-        detail = {}
-        if workout_id:
-            raw_detail = safe(client.get_workout_by_id, workout_id, default={}) or {}
-            steps = []
-            for step in (raw_detail.get("workoutSegments") or []):
-                for s in (step.get("workoutSteps") or []):
-                    target = s.get("targetType", {})
-                    end_cond = s.get("endCondition", {})
-                    steps.append({
-                        "type":           s.get("stepType", {}).get("displayOrder"),
-                        "description":    s.get("description"),
-                        "duration_type":  end_cond.get("conditionTypeKey"),
-                        "duration_value": end_cond.get("conditionValue"),
-                        "target_type":    target.get("conditionTypeKey"),
-                        "target_low":     s.get("targetValueOne"),
-                        "target_high":    s.get("targetValueTwo"),
-                    })
-            detail = {
-                "workout_name": raw_detail.get("workoutName"),
-                "sport":        raw_detail.get("sportType", {}).get("sportTypeKey"),
-                "steps":        steps,
-            }
-
-        scheduled.append({
-            "scheduled_date": w.get("date"),
-            "workout_id":     workout_id,
-            "title":          w.get("title") or detail.get("workout_name"),
-            "sport":          w.get("sportTypeKey") or detail.get("sport"),
-            "planned_distance_m": w.get("estimatedDistanceInMeters"),
-            "planned_duration_s": w.get("estimatedDurationInSecs"),
-            "detail":         detail,
-        })
-
-    # Planos de treino ativos
-    plans_raw = safe(client.get_training_plans, default=[]) or []
-    plans = []
-    for p in plans_raw:
-        if isinstance(p, str):
-            plans.append({"raw": p})
+    for item in raw:
+        if not isinstance(item, dict):
             continue
-        plans.append({
-            "plan_id":       p.get("trainingPlanId"),
-            "name":          p.get("trainingPlanName"),
-            "start_date":    p.get("startDate"),
-            "end_date":      p.get("endDate"),
-            "goal":          p.get("goal"),
-            "target_race":   p.get("targetRaceDate"),
-            "fitness_level": p.get("fitnessLevel"),
-            "weekly_runs":   p.get("numberOfRunsPerWeek"),
-            "status":        p.get("planStatus"),
+        scheduled.append({
+            "workout_id": item.get("workoutId"),
+            "scheduled_date": item.get("date"),
+            "title": item.get("title"),
+            "sport": item.get("sportTypeKey"),
+            "planned_distance_m": num(item.get("estimatedDistanceInMeters"), 1),
+            "planned_duration_s": integer(item.get("estimatedDurationInSecs")),
         })
+    log.info("%d treino(s) agendado(s).", len(scheduled))
+    return scheduled
 
-    print(f"  {len(scheduled)} treinos agendados | {len(plans)} plano(s) ativo(s)")
-    return {
-        "active_plans":       plans,
-        "scheduled_workouts": scheduled,
-    }
-
-
-def fetch_gear_stats(client):
-    print("→ Buscando estatísticas de calçados...")
-    gear_list = safe(client.get_gear, client.get_user_profile().get("displayName"), default=[]) or []
-    gear_out = []
-    for g in gear_list:
-        if g.get("gearTypeName") == "shoes":
-            gear_out.append({
-                "name":          g.get("displayName"),
-                "distance_km":   round_or_none((g.get("totalDistance") or 0) / 1000),
-                "date_begin":    g.get("dateBegin"),
-                "custom_km_max": g.get("maximumMeters") and round_or_none(g["maximumMeters"] / 1000),
-            })
-    return gear_out
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
     client = login()
-
     profile = safe(client.get_user_profile, default={}) or {}
 
-    print(f"\nColetando dados de {START_STR} até {TODAY_STR}...\n")
+    log.info("Período: %s a %s (%d dias)", START_STR, TODAY_STR, DAYS_BACK)
 
-    data = {
+    daily_metrics = build_daily_metrics(
+        fetch_daily_stats(client),
+        fetch_hrv(client),
+        fetch_sleep(client),
+        fetch_training_readiness(client),
+    )
+
+    payload = {
         "meta": {
-            "generated_at":  TODAY_STR,
-            "period_days":   DAYS_BACK,
-            "start_date":    START_STR,
-            "end_date":      TODAY_STR,
-            "display_name":  profile.get("displayName"),
+            "schema_version": SCHEMA_VERSION,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "start_date": START_STR,
+            "end_date": TODAY_STR,
+            "period_days": DAYS_BACK,
+            "units": {
+                "distance": "meters",
+                "duration": "seconds",
+                "speed": "meters_per_second",
+                "cadence": "steps_per_minute",
+            },
         },
-        "fitness": fetch_vo2max_and_race_predictions(client),
-        "runs":    fetch_activities(client),
-        "readiness_and_load": fetch_weekly_load(client),
-        "hrv":          fetch_hrv(client),
-        "sleep":        fetch_sleep(client),
-        "body_battery": fetch_body_battery(client),
-        "gear":         fetch_gear_stats(client),
-        "coach_plan":   fetch_coach_plan(client),
+        "daily_metrics": daily_metrics,
+        "activities": fetch_activities(client),
+        "fitness": fetch_fitness(client),
+        "gear": fetch_gear(client, profile),
+        "scheduled_workouts": fetch_scheduled_workouts(client),
     }
 
-    out_file = "garmin_data.json"
-    with open(out_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    with open(OUTPUT_FILE, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
 
-    coach = data["coach_plan"]
-    print(f"\n✅ Pronto! Arquivo salvo: {out_file}")
-    print(f"   Atividades:       {len(data['runs'])}")
-    print(f"   Dias de HRV:      {len(data['hrv'])}")
-    print(f"   Dias de sono:     {len(data['sleep'])}")
-    print(f"   Planos ativos:    {len(coach['active_plans'])}")
-    print(f"   Treinos agendados:{len(coach['scheduled_workouts'])}")
-    print(f"\n→ Cole o conteúdo de '{out_file}' numa conversa com o Claude para análise.")
+    log.info("Arquivo gravado: %s", OUTPUT_FILE)
+    for rotulo, chave in (
+        ("dias com métrica", "daily_metrics"),
+        ("atividades", "activities"),
+        ("calçados", "gear"),
+        ("treinos futuros", "scheduled_workouts"),
+    ):
+        total = len(payload[chave])
+        # Coleção vazia é sintoma de bug conhecido (ver os TODO em fetch_gear
+        # e fetch_scheduled_workouts) — não pode sumir no meio do INFO.
+        log.log(logging.WARNING if total == 0 else logging.INFO,
+                "  %-18s %d", rotulo + ":", total)
 
 
 if __name__ == "__main__":
