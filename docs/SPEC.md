@@ -177,63 +177,176 @@ Separar ingestão de API tem três benefícios além da necessidade técnica:
 
 ## 6. Modelo de dados (conceitual)
 
-Definição das entidades e seus atributos. A modelagem física — tipos SQL, índices, constraints — é parte do trabalho de implementação.
+Definição das entidades, seus atributos, tipo lógico e obrigatoriedade. Tipo lógico não é tipo SQL: `inteiro` não decide entre `smallint` e `integer`, `decimal` não fixa precisão. A modelagem física — tipos SQL exatos, índices, constraints — é parte do trabalho de implementação.
+
+Tipos lógicos usados: `uuid`, `date`, `inteiro`, `decimal`, `texto`, `timestamp c/ fuso`, `timestamp s/ fuso`.
+
+### Como este modelo foi definido
+
+O modelo foi validado contra 31 dias de dado real extraído do Garmin, e não derivado do que a API oferece. Cada campo passou por um critério de necessidade de persistência em três níveis: **núcleo** (consumido por requisito funcional explícito), **suporte** (dá contexto a um campo núcleo ou alimenta as evoluções da seção 2) e **descartado**.
+
+Dois campos disponíveis na ingestão foram descartados:
+
+- **`hrv_weekly_avg_ms`** — é a média móvel de 7 dias de `hrv_last_night_ms`, com desvio entre −1,43 e +0,43 ms nos 31 dias medidos. O RF04.2 já exige que a API calcule a tendência de HRV; persistir também a versão do Garmin colocaria dois números divergentes para a mesma grandeza na mesma tela.
+- **`floors_climbed`** — varia de verdade no período (0 a 16), mas nenhum requisito o consome, e é ortogonal aos dois eixos do produto: não é corrida (RF06.1) nem recuperação (RF06.2).
+
+Três campos foram mantidos contra a intuição inicial, por evidência no dado: `min_heart_rate_bpm` difere de `resting_heart_rate_bpm` em 31 dos 31 dias; `hrv_baseline_low_ms`/`hrv_baseline_high_ms` variam dia a dia (faixa móvel, não configuração fixa); e `hrv_status` não é derivável da posição do HRV na faixa — há dias com HRV dentro da faixa e status `LOW`, porque a regra é proprietária do Garmin.
 
 ### Entidade: `daily_metrics`
 
 Uma linha por dia. Métricas agregadas de saúde.
 
-| Atributo           | Descrição                           | Obrigatório |
-| ------------------ | ----------------------------------- | ----------- |
-| id                 | Identificador único                 | sim         |
-| date               | Data de referência — deve ser única | sim         |
-| resting_heart_rate | FC de repouso (bpm)                 | não         |
-| hrv                | Variabilidade da FC (ms)            | não         |
-| body_battery_max   | Pico de body battery no dia         | não         |
-| body_battery_min   | Mínimo de body battery no dia       | não         |
-| stress_avg         | Nível médio de estresse             | não         |
-| sleep_duration     | Duração do sono (minutos)           | não         |
-| sleep_score        | Pontuação de qualidade do sono      | não         |
-| steps              | Total de passos                     | não         |
-| created_at         | Timestamp de criação do registro    | sim         |
-| updated_at         | Timestamp da última atualização     | sim         |
+| Atributo               | Tipo                | Descrição                                    | Obrigatório |
+| ---------------------- | ------------------- | -------------------------------------------- | ----------- |
+| id                     | uuid                | Identificador único                          | sim         |
+| date                   | date                | Data de referência — deve ser única          | sim         |
+| steps                  | inteiro             | Total de passos                              | não         |
+| active_calories        | inteiro             | Calorias de atividade (kcal)                 | não         |
+| resting_heart_rate_bpm | inteiro             | FC de repouso (bpm)                          | não         |
+| min_heart_rate_bpm     | inteiro             | FC mínima do dia (bpm)                       | não         |
+| max_heart_rate_bpm     | inteiro             | FC máxima do dia (bpm)                       | não         |
+| stress_avg             | inteiro             | Nível médio de estresse (0–100)              | não         |
+| stress_max             | inteiro             | Nível máximo de estresse (0–100)             | não         |
+| body_battery_charged   | inteiro             | Body battery recarregada no dia              | não         |
+| body_battery_drained   | inteiro             | Body battery consumida no dia                | não         |
+| body_battery_max       | inteiro             | Pico de body battery no dia                  | não         |
+| body_battery_min       | inteiro             | Mínimo de body battery no dia                | não         |
+| hrv_last_night_ms      | inteiro             | HRV médio da noite (ms)                      | não         |
+| hrv_5min_high_ms       | inteiro             | Maior média de 5 min da noite (ms)           | não         |
+| hrv_status             | texto               | Status do HRV — vocabulário do Garmin        | não         |
+| hrv_baseline_low_ms    | inteiro             | Limite inferior da faixa pessoal (ms)        | não         |
+| hrv_baseline_high_ms   | inteiro             | Limite superior da faixa pessoal (ms)        | não         |
+| sleep_duration_s       | inteiro             | Duração do sono (segundos)                   | não         |
+| sleep_deep_s           | inteiro             | Tempo em sono profundo (segundos)            | não         |
+| sleep_light_s          | inteiro             | Tempo em sono leve (segundos)                | não         |
+| sleep_rem_s            | inteiro             | Tempo em sono REM (segundos)                 | não         |
+| sleep_awake_s          | inteiro             | Tempo acordado durante a noite (segundos)    | não         |
+| sleep_score            | inteiro             | Pontuação de qualidade do sono (0–100)       | não         |
+| readiness_score        | inteiro             | Prontidão para treino (0–100)                | não         |
+| readiness_level        | texto               | Faixa da prontidão — vocabulário do Garmin   | não         |
+| recovery_time_min      | inteiro             | Tempo de recuperação recomendado (minutos)   | não         |
+| created_at             | timestamp c/ fuso   | Timestamp de criação do registro             | sim         |
+| updated_at             | timestamp c/ fuso   | Timestamp da última atualização              | sim         |
 
 Campos opcionais refletem a realidade: nem toda métrica está disponível todo dia (relógio não usado durante o sono, sincronização incompleta, etc.). A modelagem deve tolerar lacunas sem perder o registro do dia.
 
+A lacuna deve ser **explícita**: um dia sem HRV é uma linha com os campos de HRV nulos, nunca uma linha sem esses campos. A ingestão já garante isso emitindo todas as chaves em toda linha.
+
+`sleep_deep_s + sleep_light_s + sleep_rem_s` reproduz `sleep_duration_s`, com `sleep_awake_s` fora da soma — mas com folga de arredondamento do próprio Garmin, observada entre 0 e 39 segundos. Serve como sentinela de dado corrompido, não como constraint.
+
+Os sufixos `_s`, `_ms`, `_min` e `_bpm` seguem a convenção da ingestão: unidade no nome sempre que houver ambiguidade. Foi a ausência dessa convenção que produziu a divergência anterior entre `sleep_duration` em minutos aqui e em segundos no dado real.
+
 ### Entidade: `activities`
 
-Uma linha por atividade registrada.
+Uma linha por atividade registrada. Todos os esportes, não só corrida — musculação entra desde já para não exigir recarga histórica quando o domínio de força for implementado (seção 2).
 
-| Atributo           | Descrição                                | Obrigatório |
-| ------------------ | ---------------------------------------- | ----------- |
-| id                 | Identificador único interno              | sim         |
-| garmin_activity_id | Identificador de origem — deve ser único | sim         |
-| type               | Tipo de atividade (corrida, força, etc.) | sim         |
-| started_at         | Data e hora de início                    | sim         |
-| duration           | Duração em segundos                      | sim         |
-| distance           | Distância em metros                      | não         |
-| avg_pace           | Pace médio (segundos por km)             | não         |
-| avg_heart_rate     | FC média (bpm)                           | não         |
-| max_heart_rate     | FC máxima (bpm)                          | não         |
-| avg_cadence        | Cadência média (spm)                     | não         |
-| elevation_gain     | Ganho de elevação (metros)               | não         |
-| training_load      | Carga de treino atribuída pelo Garmin    | não         |
-| created_at         | Timestamp de criação do registro         | sim         |
+| Atributo                  | Tipo                | Descrição                                          | Obrigatório |
+| ------------------------- | ------------------- | -------------------------------------------------- | ----------- |
+| id                        | uuid                | Identificador único interno                        | sim         |
+| garmin_activity_id        | texto               | Identificador de origem — deve ser único           | sim         |
+| activity_type             | texto               | Tipo cru do Garmin (`running`, `strength_training`) | sim         |
+| sport                     | texto               | Família do esporte (`run`, `strength`, `other`)     | sim         |
+| name                      | texto               | Nome dado à atividade                              | não         |
+| date                      | date                | Data local da atividade                            | sim         |
+| started_at                | timestamp s/ fuso   | Início no horário local                            | sim         |
+| started_at_gmt            | timestamp c/ fuso   | Início em UTC — fonte da verdade para ordenação    | sim         |
+| duration_s                | decimal             | Duração total (segundos)                           | sim         |
+| moving_duration_s         | decimal             | Duração em movimento (segundos)                    | não         |
+| distance_m                | decimal             | Distância (metros)                                 | não         |
+| avg_speed_mps             | decimal             | Velocidade média (m/s)                             | não         |
+| max_speed_mps             | decimal             | Velocidade máxima (m/s)                            | não         |
+| avg_hr_bpm                | inteiro             | FC média (bpm)                                     | não         |
+| max_hr_bpm                | inteiro             | FC máxima (bpm)                                    | não         |
+| calories                  | inteiro             | Calorias gastas (kcal)                             | não         |
+| elevation_gain_m          | decimal             | Ganho de elevação (metros)                         | não         |
+| elevation_loss_m          | decimal             | Perda de elevação (metros)                         | não         |
+| avg_cadence_spm           | decimal             | Cadência média (passos por minuto)                 | não         |
+| max_cadence_spm           | decimal             | Cadência máxima (passos por minuto)                | não         |
+| avg_stride_length_m       | decimal             | Comprimento médio da passada (metros)              | não         |
+| training_effect_aerobic   | decimal             | Efeito aeróbico do treino (0–5)                    | não         |
+| training_effect_anaerobic | decimal             | Efeito anaeróbico do treino (0–5)                  | não         |
+| training_load             | decimal             | Carga de treino atribuída pelo Garmin              | não         |
+| vo2max_estimated          | decimal             | VO2max estimado nesta atividade                    | não         |
+| created_at                | timestamp c/ fuso   | Timestamp de criação do registro                   | sim         |
 
-`garmin_activity_id` único é o que garante a idempotência exigida pelo RF01.3.
+`garmin_activity_id` único é o que garante a idempotência exigida pelo RF01.3. É texto, não número: identificador externo não sofre aritmética e não deve estar sujeito a limite de inteiro.
+
+**Decisão — dois campos de tipo.** `activity_type` guarda o valor cru do Garmin; `sport` guarda a família. Existem os dois porque esteira e rua são tipos separados na origem (`treadmill_running` e `running`): sem a família, o filtro do RF03.2 e o volume semanal do RF04.1 deixariam as corridas de esteira de fora. O detalhe (`GET /v1/activities/:id`) mostra o tipo cru; agregação e filtro usam `sport`. Tipo novo do Garmin cai em `other` em vez de quebrar a ingestão.
+
+**Decisão — fuso horário.** `started_at_gmt` é a fonte da verdade: ordenação (RF03.3) e paginação por cursor (RF03.4) usam esse campo, porque só ele é monotônico independente de mudança de fuso. `started_at` é o horário local sem fuso, para exibir "treinei às 12h20" sem recalcular.
+
+**Decisão — coluna `date` derivada.** Extraída do horário **local**, não do GMT: um treino às 22h no Brasil cai no dia seguinte em UTC, e o cruzamento com `daily_metrics` precisa seguir o dia vivido. É o que viabiliza a análise de musculação × recuperação prevista na seção 2. Indexada.
+
+**Decisão — sem `avg_pace`.** Pace é derivado de `avg_speed_mps` na leitura (`1000 / avg_speed_mps`), seguindo o princípio de armazenar unidade crua em SI e calcular valores apresentáveis na consulta. Persistir pace criaria um segundo número para a mesma grandeza, sujeito a divergir por arredondamento.
+
+**Zero não é medição.** Atividades sem deslocamento (musculação) chegam do Garmin com `distance` e `averageSpeed` iguais a zero, enquanto os campos irmãos — velocidade máxima, cadência, passada — chegam nulos. A ingestão normaliza esses zeros para nulo, senão qualquer média de distância ou pace seria contaminada por sessões que não se aplicam.
+
+### Entidade: `activity_splits`
+
+Voltas de uma atividade. Uma linha por volta; presente apenas em atividades com deslocamento.
+
+| Atributo         | Tipo    | Descrição                              | Obrigatório |
+| ---------------- | ------- | -------------------------------------- | ----------- |
+| id               | uuid    | Identificador único                    | sim         |
+| activity_id      | uuid    | Atividade a que pertence               | sim         |
+| index            | inteiro | Ordem da volta na atividade            | sim         |
+| distance_m       | decimal | Distância da volta (metros)            | não         |
+| duration_s       | decimal | Duração da volta (segundos)            | não         |
+| avg_speed_mps    | decimal | Velocidade média da volta (m/s)        | não         |
+| avg_hr_bpm       | inteiro | FC média da volta (bpm)                | não         |
+| max_hr_bpm       | inteiro | FC máxima da volta (bpm)               | não         |
+| elevation_gain_m | decimal | Ganho de elevação na volta (metros)    | não         |
+
+Único em (`activity_id`, `index`). Populada pela ingestão e não exposta em endpoint no MVP: é dado histórico caro de recuperar depois, e a ingestão já paga o custo de buscá-lo.
+
+### Entidade: `activity_hr_zones`
+
+Tempo por zona de frequência cardíaca. Sempre cinco linhas por atividade, inclusive musculação; zona não utilizada tem tempo zero, que aqui é medição legítima.
+
+| Atributo        | Tipo    | Descrição                                  | Obrigatório |
+| --------------- | ------- | ------------------------------------------ | ----------- |
+| id              | uuid    | Identificador único                        | sim         |
+| activity_id     | uuid    | Atividade a que pertence                   | sim         |
+| zone            | inteiro | Número da zona (1–5)                       | sim         |
+| seconds_in_zone | decimal | Tempo na zona (segundos)                   | sim         |
+| zone_low_bpm    | inteiro | Limite inferior da zona vigente (bpm)      | sim         |
+
+Único em (`activity_id`, `zone`).
+
+`zone_low_bpm` fica na linha, e não numa tabela de configuração de zonas, porque os limites **mudaram dentro do período medido** — oito valores distintos em 30 dias. É o limite vigente naquele treino, não uma constante do usuário.
+
+### Entidade: `race_predictions`
+
+Previsões de tempo de prova estimadas pelo Garmin. Série datada: uma linha por sincronização, para preservar a evolução em vez de sobrescrevê-la.
+
+| Atributo               | Tipo              | Descrição                              | Obrigatório |
+| ---------------------- | ----------------- | -------------------------------------- | ----------- |
+| id                     | uuid              | Identificador único                    | sim         |
+| date                   | date              | Data da estimativa — deve ser única    | sim         |
+| race_prediction_5k_s   | inteiro           | Tempo previsto para 5 km (segundos)    | não         |
+| race_prediction_10k_s  | inteiro           | Tempo previsto para 10 km (segundos)   | não         |
+| race_prediction_half_s | inteiro           | Tempo previsto para meia (segundos)    | não         |
+| race_prediction_full_s | inteiro           | Tempo previsto para maratona (segundos) | não         |
+| created_at             | timestamp c/ fuso | Timestamp de criação do registro       | sim         |
 
 ### Entidade: `sync_logs`
 
 Registro de cada execução de ingestão.
 
-| Atributo          | Descrição                           |
-| ----------------- | ----------------------------------- |
-| id                | Identificador único                 |
-| started_at        | Início da execução                  |
-| finished_at       | Fim da execução                     |
-| status            | Resultado (sucesso, falha, parcial) |
-| records_processed | Quantidade de registros processados |
-| error_message     | Detalhe da falha, quando houver     |
+| Atributo          | Tipo              | Descrição                                          | Obrigatório |
+| ----------------- | ----------------- | -------------------------------------------------- | ----------- |
+| id                | uuid              | Identificador único                                | sim         |
+| started_at        | timestamp c/ fuso | Início da execução                                 | sim         |
+| finished_at       | timestamp c/ fuso | Fim da execução                                    | não         |
+| status            | texto             | Estado (em andamento, sucesso, falha, parcial)     | sim         |
+| period_start      | date              | Primeiro dia do período processado                 | sim         |
+| period_end        | date              | Último dia do período processado                   | sim         |
+| records_processed | inteiro           | Quantidade de registros processados                | sim         |
+| error_message     | texto             | Detalhe da falha, quando houver                    | não         |
+
+`finished_at` é opcional de propósito: execução em andamento não tem fim, e é exatamente esse estado — linha com status de execução e `finished_at` nulo — que o RF05.3 usa para barrar sincronizações concorrentes.
+
+`period_start` e `period_end` atendem ao RF01.4, que exige registrar o período processado, não apenas o resultado.
 
 ---
 
