@@ -206,9 +206,15 @@ def fetch_activities(client):
             log.warning("Atividade sem activityId ignorada: %s", act.get("activityName"))
             continue
 
+        activity_type = dig(act, "activityType", "typeKey")
+
         activities.append({
             "activity_id": str(activity_id),
-            "activity_type": dig(act, "activityType", "typeKey"),
+            "activity_type": activity_type,
+            # O tipo cru fica para o detalhe; agregação e filtro usam a
+            # família. Tipo novo do Garmin cai em "other" em vez de quebrar
+            # a ingestão.
+            "sport": SPORT_BY_TYPE.get(activity_type, "other"),
             "name": act.get("activityName"),
             # Data pura pelo horário LOCAL, não GMT: treino às 22h no Brasil
             # cai no dia seguinte em UTC, e o agrupamento por dia tem que
