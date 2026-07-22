@@ -1,5 +1,5 @@
 import z from 'zod';
-import { FastifyTypedInstance } from './types';
+import { FastifyTypedInstance } from './types/fastify';
 import { randomUUID } from 'node:crypto';
 
 export async function routes(app: FastifyTypedInstance) {
