@@ -488,6 +488,10 @@ def fetch_fitness(client):
     race = safe(client.get_race_predictions, default={}) or {}
 
     return {
+        # As previsões são um snapshot sem data própria na resposta do
+        # Garmin. A data entra aqui para que possam ser persistidas como
+        # série — uma linha por sincronização — em vez de sobrescritas.
+        "date": TODAY_STR,
         "race_prediction_5k_s": integer(race.get("time5K")),
         "race_prediction_10k_s": integer(race.get("time10K")),
         "race_prediction_half_s": integer(race.get("timeHalfMarathon")),
