@@ -180,6 +180,16 @@ def login():
 
 # ── Atividades ─────────────────────────────────────────────────────────────────
 
+# Família do esporte a partir do activityType.typeKey do Garmin. Existe
+# porque esteira e rua são tipos SEPARADOS lá: sem agrupar, o filtro por
+# corrida e o volume semanal deixariam as de esteira de fora.
+SPORT_BY_TYPE = {
+    "running": "run",
+    "treadmill_running": "run",
+    "strength_training": "strength",
+}
+
+
 def fetch_activities(client):
     """
     Busca TODAS as atividades do período, não só corrida.
