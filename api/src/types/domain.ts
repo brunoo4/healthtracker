@@ -1,25 +1,20 @@
 import { z } from 'zod';
+import {
+  calendarDateSchema,
+  localDateTimeSchema,
+  utcDateTimeSchema
+} from './primitives.js';
 
 /**
  * Tipos de domínio do garmin-dashboard.
  *
+ * Descrevem a entidade persistida e a forma serializada que sai na resposta
+ * HTTP. Não descrevem a entrada da ingestão: o JSON cru do script Python tem
+ * outro vocabulário (snake_case, sem id nem timestamps) e é validado em
+ * `ingestion.ts`. A tradução entre os dois vive nos mappers.
+ *
  * Os schemas Zod são a fonte; os tipos saem por `z.infer`. É o que o RNF01
- * pede — tipo derivado da validação, não duplicado à mão — e dá validação em
- * runtime de graça sobre o JSON da ingestão, que é entrada externa.
- *
- * Convenções:
- *
- * - Campos temporais são STRING ISO-8601, não `Date`. Estes tipos descrevem a
- *   forma serializada do domínio — a mesma que sai na resposta HTTP. Assim o
- *   schema consegue exigir o `Z` em `startedAtGmt` e proibi-lo em `startedAt`,
- *   distinção que `z.date()` apagaria. O mapeamento para os tipos do Prisma
- *   acontece no repositório.
- * - Datas puras (`date`) são `YYYY-MM-DD`, nunca `Date`: dia é dia, e
- *   convertê-lo para instante reintroduz o problema de fuso que a coluna
- *   existe para evitar.
- * - Lacuna é `| null` explícito, nunca campo ausente (`?:`). O SPEC trata
- *   ausência de métrica como estado normal, e a ingestão já emite todas as
- *   chaves em toda linha.
+ * pede — tipo derivado da validação, não duplicado à mão.
  */
 
 // ── Vocabulários do Garmin ────────────────────────────────────────────────────
@@ -59,31 +54,16 @@ export type ActivityType = z.infer<typeof activityTypeSchema>;
 export type Sport = z.infer<typeof sportSchema>;
 export type SyncStatus = z.infer<typeof syncStatusSchema>;
 
-// ── Timestamp local ───────────────────────────────────────────────────────────
-
-/**
- * Horário de parede, sem fuso.
- *
- * `z.iso.datetime({ local: true })` sozinho não serve: a opção AMPLIA o que é
- * aceito, então um valor com `Z` continua passando — e seria lido como UTC,
- * deslocando o horário em três horas. O refine fecha isso, rejeitando qualquer
- * marcador de fuso.
- */
-const localDateTimeSchema = z.iso
-  .datetime({ local: true })
-  .refine((value) => !/(Z|[+-]\d{2}:\d{2})$/.test(value), {
-    message: 'Deve ser horário local, sem marcador de fuso'
-  });
-
 // ── daily_metrics ─────────────────────────────────────────────────────────────
 
 export const dailyMetricSchema = z.object({
   id: z.uuid(),
-  date: z.iso.date(),
+  date: calendarDateSchema,
 
   // Atividade geral
   steps: z.int().nullable(),
   activeCalories: z.int().nullable(),
+  floorsClimbed: z.int().nullable(),
 
   // Cardio
   restingHeartRateBpm: z.int().nullable(),
@@ -122,8 +102,8 @@ export const dailyMetricSchema = z.object({
   readinessLevel: readinessLevelSchema.nullable(),
   recoveryTimeMin: z.int().nullable(),
 
-  createdAt: z.iso.datetime(),
-  updatedAt: z.iso.datetime()
+  createdAt: utcDateTimeSchema,
+  updatedAt: utcDateTimeSchema
 });
 
 export type DailyMetric = z.infer<typeof dailyMetricSchema>;
@@ -135,17 +115,17 @@ export const activitySchema = z.object({
   /** Identificador de origem. Texto: não sofre aritmética nem tem limite. */
   garminActivityId: z.string(),
   /** Tipo cru do Garmin — usado no detalhe. */
-  activityType: activityTypeSchema,
+  activityType: z.string(),
   /** Família — usada em filtro e agregação, senão esteira não conta como corrida. */
   sport: sportSchema,
   name: z.string().nullable(),
 
   /** Dia local da atividade. Chave de cruzamento com dailyMetric.date. */
-  date: z.iso.date(),
+  date: calendarDateSchema,
   /** Horário local, sem fuso: para exibir sem recalcular. */
   startedAt: localDateTimeSchema,
   /** UTC. Fonte da verdade para ordenação e cursor de paginação. */
-  startedAtGmt: z.iso.datetime(),
+  startedAtGmt: utcDateTimeSchema,
 
   durationS: z.number(),
   movingDurationS: z.number().nullable(),
@@ -159,7 +139,7 @@ export const activitySchema = z.object({
 
   avgHrBpm: z.int().nullable(),
   maxHrBpm: z.int().nullable(),
-  calories: z.int().nullable(),
+  calories: z.number().nullable(),
 
   elevationGainM: z.number().nullable(),
   elevationLossM: z.number().nullable(),
@@ -173,7 +153,7 @@ export const activitySchema = z.object({
   trainingLoad: z.number().nullable(),
   vo2maxEstimated: z.number().nullable(),
 
-  createdAt: z.iso.datetime()
+  createdAt: utcDateTimeSchema
 });
 
 export type Activity = z.infer<typeof activitySchema>;
@@ -183,7 +163,7 @@ export type Activity = z.infer<typeof activitySchema>;
 export const activitySplitSchema = z.object({
   id: z.uuid(),
   activityId: z.uuid(),
-  index: z.int(),
+  index: z.int().min(1),
   distanceM: z.number().nullable(),
   durationS: z.number().nullable(),
   avgSpeedMps: z.number().nullable(),
@@ -203,7 +183,7 @@ export const activityHrZoneSchema = z.object({
   /** Zero aqui é medição: zona não utilizada no treino. */
   secondsInZone: z.number(),
   /** Limite vigente naquele treino — os limites mudam ao longo do tempo. */
-  zoneLowBpm: z.int()
+  zoneLowBpm: z.number()
 });
 
 export type ActivityHrZone = z.infer<typeof activityHrZoneSchema>;
@@ -212,12 +192,13 @@ export type ActivityHrZone = z.infer<typeof activityHrZoneSchema>;
 
 export const racePredictionSchema = z.object({
   id: z.uuid(),
-  date: z.iso.date(),
+  /** Obter a data do meta.generated_at */
+  date: calendarDateSchema,
   racePrediction5kS: z.int().nullable(),
   racePrediction10kS: z.int().nullable(),
   racePredictionHalfS: z.int().nullable(),
   racePredictionFullS: z.int().nullable(),
-  createdAt: z.iso.datetime()
+  createdAt: utcDateTimeSchema
 });
 
 export type RacePrediction = z.infer<typeof racePredictionSchema>;
@@ -226,13 +207,13 @@ export type RacePrediction = z.infer<typeof racePredictionSchema>;
 
 export const syncLogSchema = z.object({
   id: z.uuid(),
-  startedAt: z.iso.datetime(),
+  startedAt: utcDateTimeSchema,
   /** Nulo enquanto roda. É esse estado que barra execução concorrente (RF05.3). */
-  finishedAt: z.iso.datetime().nullable(),
+  finishedAt: utcDateTimeSchema.nullable(),
   status: syncStatusSchema,
   /** Período processado, exigido pelo RF01.4. */
-  periodStart: z.iso.date(),
-  periodEnd: z.iso.date(),
+  periodStart: calendarDateSchema,
+  periodEnd: calendarDateSchema,
   recordsProcessed: z.int(),
   errorMessage: z.string().nullable()
 });
