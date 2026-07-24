@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: garmin-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: garmin
+      POSTGRES_PASSWORD: garmin
+      POSTGRES_DB: garmin_dashboard
+    ports:
+      - '5432:5432'
+    volumes:
+      - garmin-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U garmin -d garmin_dashboard']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  garmin-pgdata:
