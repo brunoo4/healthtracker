@@ -4,8 +4,8 @@
   "description": "",
   "license": "ISC",
   "author": "",
-  "type": "commonjs",
-  "main": "index.ts",
+  "type": "module",
+  "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch --env-file src/server.ts",
     "build": "tsc",

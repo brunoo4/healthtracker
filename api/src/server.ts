@@ -8,7 +8,7 @@ import {
 import { fastifySwagger } from '@fastify/swagger';
 import { fastifyCors } from '@fastify/cors';
 import SacalarApiReference from '@scalar/fastify-api-reference';
-import { routes } from './routes';
+import { routes } from './routes.js';
 import { fastifySwaggerUi } from '@fastify/swagger-ui';
 
 const app = fastify().withTypeProvider<ZodTypeProvider>();
