@@ -1,0 +1,140 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model DailyMetric {
+  id                  String   @id @default(uuid()) @db.Uuid
+  date                DateTime @unique @db.Date
+  steps               Int?
+  activeCalories      Int?     @map("active_calories")
+  floorsClimbed       Int?     @map("floors_climbed")
+  restingHeartRateBpm Int?     @map("resting_heart_rate_bpm")
+  minHeartRateBpm     Int?     @map("min_heart_rate_bpm")
+  maxHeartRateBpm     Int?     @map("max_heart_rate_bpm")
+  stressAvg           Int?     @map("stress_avg")
+  stressMax           Int?     @map("stress_max")
+  bodyBatteryCharged  Int?     @map("body_battery_charged")
+  bodyBatteryDrained  Int?     @map("body_battery_drained")
+  bodyBatteryMax      Int?     @map("body_battery_max")
+  bodyBatteryMin      Int?     @map("body_battery_min")
+  hrv5minHighMs       Int?     @map("hrv_5min_high_ms")
+  hrvWeeklyAvgMs      Int?     @map("hrv_weekly_avg_ms")
+  hrvStatus           String?  @map("hrv_status")
+  hrvBaselineLowMs    Int?     @map("hrv_baseline_low_ms")
+  hrvBaselineHighMs   Int?     @map("hrv_baseline_high_ms")
+  sleepDurationS      Int?     @map("sleep_duration_s")
+  sleepDeepS          Int?     @map("sleep_deep_s")
+  sleepLightS         Int?     @map("sleep_light_s")
+  sleepRemS           Int?     @map("sleep_rem_s")
+  sleepAwakeS         Int?     @map("sleep_awake_s")
+  sleepScore          Int?     @map("sleep_score")
+  readinessScore      Int?     @map("readiness_score")
+  readinessLevel      String?  @map("readiness_level")
+  recoveryTimeMin     Int?     @map("recovery_time_min")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("daily_metrics")
+}
+
+model Activity {
+  id                      String           @id @default(uuid()) @db.Uuid
+  garminActivityId        String           @unique @map("garmin_activity_id")
+  activityType            String           @map("activity_type")
+  sport                   String
+  name                    String?
+  date                    DateTime         @db.Date
+  startedAt               DateTime         @map("started_at") @db.Timestamp
+  startedAtGmt            DateTime         @map("started_at_gmt") @db.Timestamptz
+  durationS               Float            @map("duration_s")
+  movingDurationS         Float?           @map("moving_duration_s")
+  distanceM               Float?           @map("distance_m")
+  avgSpeedMps             Float?           @map("avg_speed_mps")
+  maxSpeedMps             Float?           @map("max_speed_mps")
+  avgHrBpm                Int?             @map("avg_hr_bpm")
+  maxHrBpm                Int?             @map("max_hr_bpm")
+  calories                Float?
+  elevationGainM          Float?           @map("elevation_gain_m")
+  elevationLossM          Float?           @map("elevation_loss_m")
+  avgCadenceSpm           Float?           @map("avg_cadence_spm")
+  maxCadenceSpm           Float?           @map("max_cadence_spm")
+  avgStrideLengthM        Float?           @map("avg_stride_length_m")
+  trainingEffectAerobic   Float?           @map("training_effect_aerobic")
+  trainingEffectAnaerobic Float?           @map("training_effect_anaerobic")
+  trainingLoad            Float?           @map("training_load")
+  vo2maxEstimated         Float?           @map("vo2max_estimated")
+  createdAt               DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  splits                  ActivitySplit[]
+  hrZones                 ActivityHrZone[]
+
+  @@index([date])
+  @@index([sport, startedAtGmt])
+  @@map("activities")
+}
+
+model ActivitySplit {
+  id             String   @id @default(uuid()) @db.Uuid
+  activityId     String   @map("activity_id") @db.Uuid
+  activity       Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  index          Int
+  distanceM      Float?   @map("distance_m")
+  durationS      Float?   @map("duration_s")
+  avgSpeedMps    Float?   @map("avg_speed_mps")
+  avgHrBpm       Int?     @map("avg_hr_bpm")
+  maxHrBpm       Int?     @map("max_hr_bpm")
+  elevationGainM Float?   @map("elevation_gain_m")
+
+  @@unique([activityId, index])
+  @@map("activity_splits")
+}
+
+model ActivityHrZone {
+  id            String   @id @default(uuid()) @db.Uuid
+  activityId    String   @map("activity_id") @db.Uuid
+  activity      Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  zone          Int
+  secondsInZone Float    @map("seconds_in_zone")
+  zoneLowBpm    Float    @map("zone_low_bpm")
+
+  @@unique([activityId, zone])
+  @@map("activity_hr_zones")
+}
+
+model RacePrediction {
+  id                  String   @id @default(uuid()) @db.Uuid
+  /// Data da captura, derivada de meta.generated_at — o bloco fitness do JSON
+  /// não traz data própria. É a data da leitura, não a do período consultado.
+  date                DateTime @unique @db.Date
+  racePrediction5kS   Int?     @map("race_prediction_5k_s")
+  racePrediction10kS  Int?     @map("race_prediction_10k_s")
+  racePredictionHalfS Int?     @map("race_prediction_half_s")
+  racePredictionFullS Int?     @map("race_prediction_full_s")
+  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("race_predictions")
+}
+
+model SyncLog {
+  id               String    @id @default(uuid()) @db.Uuid
+  startedAt        DateTime  @map("started_at") @db.Timestamptz
+  /// Nulo enquanto roda. É esse estado que barra execução concorrente (RF05.3).
+  finishedAt       DateTime? @map("finished_at") @db.Timestamptz
+  status           String
+  periodStart      DateTime  @map("period_start") @db.Date
+  periodEnd        DateTime  @map("period_end") @db.Date
+  recordsProcessed Int       @default(0) @map("records_processed")
+  errorMessage     String?   @map("error_message")
+
+  @@index([finishedAt])
+  @@map("sync_logs")
+}
