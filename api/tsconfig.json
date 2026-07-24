@@ -23,5 +23,10 @@
     "paths": {
       "@/*": ["./src/*"]
     }
-  }
+  },
+
+  // Sem isto o TS varre **/* a partir de api/ e puxa prisma.config.ts, que
+  // vive fora do rootDir. Esse arquivo é carregado pelo Prisma CLI, não pelo
+  // build da API.
+  "include": ["src/**/*"]
 }
