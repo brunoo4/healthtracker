@@ -33,6 +33,11 @@ env/
 # migrations SÃO versionadas — não ignorar api/prisma/migrations/
 prisma/*.db
 prisma/*.db-journal
+/api/generated/prisma
+
+# ─── Agentes / skills locais ─────────────────────────
+# Symlinks gerados pelo Prisma CLI, resolvidos por máquina
+**/.claude/skills/
 
 # ─── Dados locais ────────────────────────────────────
 *.sqlite
