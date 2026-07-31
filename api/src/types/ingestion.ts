@@ -92,7 +92,7 @@ export const ingestionActivitySchema = z.object({
   hr_zones: z.array(ingestionHrZoneSchema)
 });
 
-const ingestionFitnessSchema = z.object({
+export const ingestionFitnessSchema = z.object({
   race_prediction_5k_s: z.int().nullable(),
   race_prediction_10k_s: z.int().nullable(),
   race_prediction_half_s: z.int().nullable(),
