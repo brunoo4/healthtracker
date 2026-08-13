@@ -120,8 +120,8 @@ describe('toActivity', () => {
         activityType: 'running',
         sport: 'run',
         name: 'Corrida matinal',
-        date: '2026-07-20',
-        startedAt: '2026-07-20T06:12:00',
+        date: new Date('2026-07-20'),
+        startedAt: new Date('2026-07-20T06:12:00'),
         startedAtGmt: '2026-07-20T09:12:00Z',
         durationS: 1834.2,
         movingDurationS: 1801.0,
@@ -204,8 +204,8 @@ describe('toActivity', () => {
 
   it('passa as datas como string, sem converter', () => {
     const data = toActivity(rawRunning);
-    expect(data.activity.date).toBe('2026-07-20');
-    expect(data.activity.startedAt).toBe('2026-07-20T06:12:00');
+    expect(data.activity.date).toEqual(new Date('2026-07-20'));
+    expect(data.activity.startedAt).toEqual(new Date('2026-07-20T06:12:00'));
     expect(data.activity.startedAtGmt).toBe('2026-07-20T09:12:00Z');
   });
 

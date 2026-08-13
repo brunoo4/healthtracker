@@ -53,8 +53,8 @@ export function toActivity(raw: IngestionActivity): MappedActivity {
       sport: toSport(raw.activity_type),
       name: raw.name,
 
-      date: raw.date,
-      startedAt: raw.started_at,
+      date: new Date(raw.date),
+      startedAt: new Date(raw.started_at),
       startedAtGmt: raw.started_at_gmt,
 
       durationS: raw.duration_s,
