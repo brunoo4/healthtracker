@@ -44,7 +44,7 @@ function validDailyMetric(date: string) {
   };
 }
 
-function makePayload(dailyMetrics: unknown[]) {
+function makePayload(dailyMetric: unknown[]) {
   return {
     meta: {
       schema_version: 3,
@@ -53,7 +53,7 @@ function makePayload(dailyMetrics: unknown[]) {
       end_date: '2026-07-21',
       period_days: 7
     },
-    daily_metrics: dailyMetrics,
+    daily_metrics: dailyMetric,
     activities: [],
     fitness: {
       race_prediction_5k_s: null,

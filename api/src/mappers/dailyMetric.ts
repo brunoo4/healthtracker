@@ -1,7 +1,7 @@
 import { Prisma } from '@/generated/prisma/client.js';
 import { IngestionDailyMetric } from '@/types/ingestion.js';
 
-export function toDailyMetrics(
+export function toDailyMetric(
   raw: IngestionDailyMetric
 ): Prisma.DailyMetricCreateInput {
   return {

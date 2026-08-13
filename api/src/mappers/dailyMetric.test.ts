@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toDailyMetrics } from './dailyMetrics.js';
+import { toDailyMetric } from './dailyMetric.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import {
   ingestionDailyMetricSchema,
@@ -74,7 +74,7 @@ const rawSparse: IngestionDailyMetric = {
   recovery_time_min: null
 };
 
-describe('toDailyMetrics', () => {
+describe('toDailyMetric', () => {
   it('mapeia todos os campos de um dia completo (âncora)', () => {
     const expected: Prisma.DailyMetricCreateInput = {
       date: new Date('2026-07-20'),
@@ -106,18 +106,18 @@ describe('toDailyMetrics', () => {
       recoveryTimeMin: 180
     };
 
-    expect(toDailyMetrics(rawFull)).toEqual(expected);
+    expect(toDailyMetric(rawFull)).toEqual(expected);
   });
 
   it('converte date em um Date à meia-noite UTC', () => {
-    const data = toDailyMetrics(rawFull);
+    const data = toDailyMetric(rawFull);
     expect(data.date).toBeInstanceOf(Date);
     expect(data.date).toEqual(new Date('2026-07-20'));
     expect((data.date as Date).toISOString()).toBe('2026-07-20T00:00:00.000Z');
   });
 
   it('preserva os nulos de um dia esparso', () => {
-    const data = toDailyMetrics(rawSparse);
+    const data = toDailyMetric(rawSparse);
     expect(data.steps).toBe(1203);
     expect(data.activeCalories).toBeNull();
     expect(data.restingHeartRateBpm).toBeNull();
@@ -128,11 +128,11 @@ describe('toDailyMetrics', () => {
   });
 
   it('não propaga hrv_last_night_ms (não existe no modelo)', () => {
-    expect('hrvLastNightMs' in toDailyMetrics(rawFull)).toBe(false);
+    expect('hrvLastNightMs' in toDailyMetric(rawFull)).toBe(false);
   });
 
   it('não define id nem createdAt (ficam nos defaults do banco)', () => {
-    const data = toDailyMetrics(rawFull);
+    const data = toDailyMetric(rawFull);
     expect(data.id).toBeUndefined();
     expect(data.createdAt).toBeUndefined();
   });
