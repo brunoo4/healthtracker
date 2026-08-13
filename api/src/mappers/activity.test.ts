@@ -216,8 +216,11 @@ describe('toActivity', () => {
 
   it('preserva ordem e index dos splits', () => {
     const data = toActivity(rawRunning);
-    const created = (data.splits as { create: Prisma.ActivitySplitCreateWithoutActivityInput[] })
-      .create;
+    const created = (
+      data.splits as {
+        create: Prisma.ActivitySplitCreateWithoutActivityInput[];
+      }
+    ).create;
     expect(created).toHaveLength(2);
     expect(created.map((s) => s.index)).toEqual([1, 2]);
   });
