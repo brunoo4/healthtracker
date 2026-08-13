@@ -1,10 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { toSport, toActivity } from './activity.js';
-import type { Prisma } from '../generated/prisma/client.js';
 import {
   ingestionActivitySchema,
   type IngestionActivity
 } from '../types/ingestion.js';
+import { MappedActivity } from '@/types/mapped.js';
 
 describe('toSport', () => {
   it('mapeia running para run', () => {
@@ -114,73 +114,72 @@ const rawStrength: IngestionActivity = {
 
 describe('toActivity', () => {
   it('mapeia todos os campos da corrida (âncora)', () => {
-    const expected: Prisma.ActivityCreateInput = {
-      garminActivityId: '19283746',
-      activityType: 'running',
-      sport: 'run',
-      name: 'Corrida matinal',
-      date: '2026-07-20',
-      startedAt: '2026-07-20T06:12:00',
-      startedAtGmt: '2026-07-20T09:12:00Z',
-      durationS: 1834.2,
-      movingDurationS: 1801.0,
-      distanceM: 5012.4,
-      avgSpeedMps: 2.73,
-      maxSpeedMps: 3.9,
-      avgHrBpm: 152,
-      maxHrBpm: 171,
-      calories: 320.5,
-      elevationGainM: 42.0,
-      elevationLossM: 40.0,
-      avgCadenceSpm: 168.0,
-      maxCadenceSpm: 182.0,
-      avgStrideLengthM: 0.98,
-      trainingEffectAerobic: 3.1,
-      trainingEffectAnaerobic: 0.4,
-      trainingLoad: 88.0,
-      vo2maxEstimated: 52.0,
-      splits: {
-        create: [
-          {
-            index: 1,
-            distanceM: 1000.0,
-            durationS: 366.0,
-            avgSpeedMps: 2.73,
-            avgHrBpm: 148,
-            maxHrBpm: 158,
-            elevationGainM: 8.0
-          },
-          {
-            index: 2,
-            distanceM: 1000.0,
-            durationS: 372.0,
-            avgSpeedMps: 2.69,
-            avgHrBpm: 155,
-            maxHrBpm: 164,
-            elevationGainM: 6.0
-          }
-        ]
+    const expected: MappedActivity = {
+      activity: {
+        garminActivityId: '19283746',
+        activityType: 'running',
+        sport: 'run',
+        name: 'Corrida matinal',
+        date: '2026-07-20',
+        startedAt: '2026-07-20T06:12:00',
+        startedAtGmt: '2026-07-20T09:12:00Z',
+        durationS: 1834.2,
+        movingDurationS: 1801.0,
+        distanceM: 5012.4,
+        avgSpeedMps: 2.73,
+        maxSpeedMps: 3.9,
+        avgHrBpm: 152,
+        maxHrBpm: 171,
+        calories: 320.5,
+        elevationGainM: 42.0,
+        elevationLossM: 40.0,
+        avgCadenceSpm: 168.0,
+        maxCadenceSpm: 182.0,
+        avgStrideLengthM: 0.98,
+        trainingEffectAerobic: 3.1,
+        trainingEffectAnaerobic: 0.4,
+        trainingLoad: 88.0,
+        vo2maxEstimated: 52.0
       },
-      hrZones: {
-        create: [
-          { zone: 2, secondsInZone: 900.0, zoneLowBpm: 121.0 },
-          { zone: 3, secondsInZone: 610.0, zoneLowBpm: 140.0 }
-        ]
-      }
+      splits: [
+        {
+          index: 1,
+          distanceM: 1000.0,
+          durationS: 366.0,
+          avgSpeedMps: 2.73,
+          avgHrBpm: 148,
+          maxHrBpm: 158,
+          elevationGainM: 8.0
+        },
+        {
+          index: 2,
+          distanceM: 1000.0,
+          durationS: 372.0,
+          avgSpeedMps: 2.69,
+          avgHrBpm: 155,
+          maxHrBpm: 164,
+          elevationGainM: 6.0
+        }
+      ],
+      hrZones: [
+        { zone: 2, secondsInZone: 900.0, zoneLowBpm: 121.0 },
+        { zone: 3, secondsInZone: 610.0, zoneLowBpm: 140.0 }
+      ]
     };
 
     expect(toActivity(rawRunning)).toEqual(expected);
   });
 
   it('deriva sport de activity_type', () => {
-    expect(toActivity(rawRunning).sport).toBe('run');
-    expect(toActivity(rawStrength).sport).toBe('strength');
+    expect(toActivity(rawRunning).activity.sport).toBe('run');
+    expect(toActivity(rawStrength).activity.sport).toBe('strength');
   });
 
   it('mapeia activity_type desconhecido para sport other e avisa uma vez', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(
-      toActivity({ ...rawRunning, activity_type: 'beach_volleyball' }).sport
+      toActivity({ ...rawRunning, activity_type: 'beach_volleyball' }).activity
+        .sport
     ).toBe('other');
     expect(warn).toHaveBeenCalledOnce();
     warn.mockRestore();
@@ -188,51 +187,46 @@ describe('toActivity', () => {
 
   it('preserva os nulos de uma atividade sem deslocamento', () => {
     const data = toActivity(rawStrength);
-    expect(data.movingDurationS).toBeNull();
-    expect(data.distanceM).toBeNull();
-    expect(data.avgSpeedMps).toBeNull();
-    expect(data.maxSpeedMps).toBeNull();
-    expect(data.avgCadenceSpm).toBeNull();
-    expect(data.maxCadenceSpm).toBeNull();
-    expect(data.avgStrideLengthM).toBeNull();
-    expect(data.vo2maxEstimated).toBeNull();
+    expect(data.activity.movingDurationS).toBeNull();
+    expect(data.activity.distanceM).toBeNull();
+    expect(data.activity.avgSpeedMps).toBeNull();
+    expect(data.activity.maxSpeedMps).toBeNull();
+    expect(data.activity.avgCadenceSpm).toBeNull();
+    expect(data.activity.maxCadenceSpm).toBeNull();
+    expect(data.activity.avgStrideLengthM).toBeNull();
+    expect(data.activity.vo2maxEstimated).toBeNull();
   });
 
   it('propaga name nulo e name preenchido', () => {
-    expect(toActivity(rawStrength).name).toBeNull();
-    expect(toActivity(rawRunning).name).toBe('Corrida matinal');
+    expect(toActivity(rawStrength).activity.name).toBeNull();
+    expect(toActivity(rawRunning).activity.name).toBe('Corrida matinal');
   });
 
   it('passa as datas como string, sem converter', () => {
     const data = toActivity(rawRunning);
-    expect(data.date).toBe('2026-07-20');
-    expect(data.startedAt).toBe('2026-07-20T06:12:00');
-    expect(data.startedAtGmt).toBe('2026-07-20T09:12:00Z');
+    expect(data.activity.date).toBe('2026-07-20');
+    expect(data.activity.startedAt).toBe('2026-07-20T06:12:00');
+    expect(data.activity.startedAtGmt).toBe('2026-07-20T09:12:00Z');
   });
 
   it('gera splits vazios quando não há splits', () => {
-    expect(toActivity(rawStrength).splits).toEqual({ create: [] });
+    expect(toActivity(rawStrength).splits).toEqual([]);
   });
 
   it('preserva ordem e index dos splits', () => {
     const data = toActivity(rawRunning);
-    const created = (
-      data.splits as {
-        create: Prisma.ActivitySplitCreateWithoutActivityInput[];
-      }
-    ).create;
-    expect(created).toHaveLength(2);
-    expect(created.map((s) => s.index)).toEqual([1, 2]);
+    expect(data.splits).toHaveLength(2);
+    expect(data.splits.map((s) => s.index)).toEqual([1, 2]);
   });
 
   it('gera hrZones vazias quando não há zonas', () => {
-    expect(toActivity(rawStrength).hrZones).toEqual({ create: [] });
+    expect(toActivity(rawStrength).hrZones).toEqual([]);
   });
 
   it('não define id nem createdAt (ficam nos defaults do banco)', () => {
     const data = toActivity(rawRunning);
-    expect(data.id).toBeUndefined();
-    expect(data.createdAt).toBeUndefined();
+    expect(data.activity.id).toBeUndefined();
+    expect(data.activity.createdAt).toBeUndefined();
   });
 
   it('as fixtures são payloads de ingestão válidos', () => {

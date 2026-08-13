@@ -4,7 +4,7 @@ import type {
   IngestionHrZone
 } from '../types/ingestion.js';
 import type { Sport } from '../types/domain.js';
-import type { Prisma } from '../generated/prisma/client.js';
+import { MappedActivity, MappedHrZone, MappedSplit } from '@/types/mapped.js';
 
 const SPORT_BY_ACTIVITY_TYPE: Record<string, Sport> = {
   running: 'run',
@@ -25,9 +25,7 @@ export function toSport(activityType: string): Sport {
   return sport;
 }
 
-function toSplitCreate(
-  split: IngestionSplit
-): Prisma.ActivitySplitCreateWithoutActivityInput {
+function toSplitCreate(split: IngestionSplit): MappedSplit {
   return {
     index: split.index,
     distanceM: split.distance_m,
@@ -39,9 +37,7 @@ function toSplitCreate(
   };
 }
 
-function toHrZoneCreate(
-  zone: IngestionHrZone
-): Prisma.ActivityHrZoneCreateWithoutActivityInput {
+function toHrZoneCreate(zone: IngestionHrZone): MappedHrZone {
   return {
     zone: zone.zone,
     secondsInZone: zone.seconds_in_zone,
@@ -49,41 +45,42 @@ function toHrZoneCreate(
   };
 }
 
-export function toActivity(raw: IngestionActivity): Prisma.ActivityCreateInput {
+export function toActivity(raw: IngestionActivity): MappedActivity {
   return {
-    garminActivityId: raw.activity_id,
-    activityType: raw.activity_type,
-    sport: toSport(raw.activity_type),
-    name: raw.name,
+    activity: {
+      garminActivityId: raw.activity_id,
+      activityType: raw.activity_type,
+      sport: toSport(raw.activity_type),
+      name: raw.name,
 
-    date: raw.date,
-    startedAt: raw.started_at,
-    startedAtGmt: raw.started_at_gmt,
+      date: raw.date,
+      startedAt: raw.started_at,
+      startedAtGmt: raw.started_at_gmt,
 
-    durationS: raw.duration_s,
-    movingDurationS: raw.moving_duration_s,
+      durationS: raw.duration_s,
+      movingDurationS: raw.moving_duration_s,
 
-    distanceM: raw.distance_m,
-    avgSpeedMps: raw.avg_speed_mps,
-    maxSpeedMps: raw.max_speed_mps,
+      distanceM: raw.distance_m,
+      avgSpeedMps: raw.avg_speed_mps,
+      maxSpeedMps: raw.max_speed_mps,
 
-    avgHrBpm: raw.avg_hr_bpm,
-    maxHrBpm: raw.max_hr_bpm,
-    calories: raw.calories,
+      avgHrBpm: raw.avg_hr_bpm,
+      maxHrBpm: raw.max_hr_bpm,
+      calories: raw.calories,
 
-    elevationGainM: raw.elevation_gain_m,
-    elevationLossM: raw.elevation_loss_m,
+      elevationGainM: raw.elevation_gain_m,
+      elevationLossM: raw.elevation_loss_m,
 
-    avgCadenceSpm: raw.avg_cadence_spm,
-    maxCadenceSpm: raw.max_cadence_spm,
-    avgStrideLengthM: raw.avg_stride_length_m,
+      avgCadenceSpm: raw.avg_cadence_spm,
+      maxCadenceSpm: raw.max_cadence_spm,
+      avgStrideLengthM: raw.avg_stride_length_m,
 
-    trainingEffectAerobic: raw.training_effect_aerobic,
-    trainingEffectAnaerobic: raw.training_effect_anaerobic,
-    trainingLoad: raw.training_load,
-    vo2maxEstimated: raw.vo2max_estimated,
-
-    splits: { create: raw.splits.map(toSplitCreate) },
-    hrZones: { create: raw.hr_zones.map(toHrZoneCreate) }
+      trainingEffectAerobic: raw.training_effect_aerobic,
+      trainingEffectAnaerobic: raw.training_effect_anaerobic,
+      trainingLoad: raw.training_load,
+      vo2maxEstimated: raw.vo2max_estimated
+    },
+    splits: raw.splits.map(toSplitCreate),
+    hrZones: raw.hr_zones.map(toHrZoneCreate)
   };
 }
