@@ -99,6 +99,8 @@ export const ingestionFitnessSchema = z.object({
   race_prediction_full_s: z.int().nullable()
 });
 
+//Tudo-ou-nada (cabeçalho quebrado = arquivo inútil, falha total). Atividade ruim não pode derrubar as outras).
+//Por isso meta vai validado fundo no envelope, e os arrays vão rasos pra serem validados no laço da ingestion.
 export const ingestionPayloadSchema = z.object({
   meta: ingestionMetaSchema,
   daily_metrics: z.array(z.unknown()),
