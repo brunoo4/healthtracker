@@ -172,7 +172,6 @@ describe('ingest — daily_metrics', () => {
     expect(result.processed).toBe(4);
     expect(result.failed).toBe(0);
     expect(prisma.dailyMetric.upsert).toHaveBeenCalledTimes(3);
-    89;
   });
 
   it('pula registro inválido e continua os demais', async () => {
