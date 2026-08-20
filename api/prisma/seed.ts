@@ -1,16 +1,9 @@
 import 'dotenv/config';
-import { Pool } from 'pg';
-import { PrismaPg } from '@prisma/adapter-pg';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { ingestionPayloadSchema } from '@/types/ingestion.js';
-import { PrismaClient } from '@/generated/prisma/client.js';
 import { ingest } from '@/ingest.js';
-
-const pool = new Pool({ connectionString: `${process.env.DATABASE_URL}` });
-
-const adapter = new PrismaPg(pool);
-const prisma = new PrismaClient({ adapter });
+import { prisma, pool } from '@/db.js';
 
 const jsonPath =
   process.env.SEED_FILE ??
