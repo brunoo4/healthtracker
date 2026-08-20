@@ -219,3 +219,11 @@ export const syncLogSchema = z.object({
 });
 
 export type SyncLog = z.infer<typeof syncLogSchema>;
+
+export interface ApiResponse<T> {
+  data: T;
+  pagination?: {
+    nextCursor: string | null;
+    hasMore: boolean;
+  };
+}
