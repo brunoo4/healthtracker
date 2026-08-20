@@ -83,7 +83,7 @@ export const dailyMetricSchema = z.object({
   // HRV. Sem média semanal: é a média móvel de 7 dias de hrvLastNightMs
   // (desvio de -1,43 a +0,43 ms em 31 dias) e o RF04.2 já exige que a API
   // calcule a própria tendência.
-  hrvLastNightMs: z.int().nullable(),
+  hrvWeeklyAvgMs: z.int().nullable(),
   hrv5minHighMs: z.int().nullable(),
   hrvStatus: hrvStatusSchema.nullable(),
   hrvBaselineLowMs: z.int().nullable(),
@@ -219,3 +219,11 @@ export const syncLogSchema = z.object({
 });
 
 export type SyncLog = z.infer<typeof syncLogSchema>;
+
+export interface ApiResponse<T> {
+  data: T;
+  pagination?: {
+    nextCursor: string | null;
+    hasMore: boolean;
+  };
+}
