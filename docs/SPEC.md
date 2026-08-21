@@ -368,7 +368,6 @@ Série de métricas diárias.
 
 - Formato de data: `YYYY-MM-DD`
 - `from` deve ser menor ou igual a `to`
-- Intervalo máximo: 365 dias
 - Entrada inválida retorna 400 com descrição do problema
 
 ### `GET /v1/activities`

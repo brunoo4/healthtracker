@@ -22,15 +22,6 @@ describe('metricsService.getDaily', () => {
     expect(repo.findDaily).not.toHaveBeenCalled();
   });
 
-  it('lança se o intervalo passa de 365 dias', async () => {
-    const repo = makeFakeRepo();
-    const service = makeMetricsService(repo as any);
-
-    await expect(
-      service.getDaily({ from: '2025-01-01', to: '2026-07-14' })
-    ).rejects.toThrow(ValidationError);
-  });
-
   it('delega ao repositório quando o intervalo é válido', async () => {
     const repo = makeFakeRepo();
     const service = makeMetricsService(repo as any);
